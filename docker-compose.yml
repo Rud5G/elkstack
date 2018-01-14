@@ -1,0 +1,108 @@
+version: '2.1'
+services:
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:6.1.1
+    container_name: filebeat
+    volumes:
+      - /var/log:/mnt/log:ro
+    networks:
+       - beats
+    user: root
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  heartbeat:
+    image: docker.elastic.co/beats/heartbeat:6.1.1
+    container_name: heartbeat
+    networks:
+       - beats
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  metricbeat:
+    image: docker.elastic.co/beats/metricbeat:6.1.1
+    container_name: metricbeat
+    networks:
+       - beats
+    # REF: https://www.elastic.co/guide/en/beats/metricbeat/current/running-in-container.html
+    volumes:
+      - /proc:/hostfs/proc:ro
+      - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+      - /:/hostfs:ro
+    command: metricbeat -e -system.hostfs=/hostfs
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  packetbeat:
+    image: docker.elastic.co/beats/packetbeat:6.1.1
+    container_name: packetbeat
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    command: packetbeat -v -e -E output.elasticsearch.hosts='["localhost:9200"]'
+    network_mode: host
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:6.1.1
+    container_name: elasticsearch
+    environment:
+      - "http.host=0.0.0.0"
+      - "transport.host=127.0.0.1"
+    ports:
+      - '127.0.0.1:9200:9200'
+    networks:
+       - beats
+    healthcheck:
+      test: ['CMD', 'curl', '-f', '-u', 'elastic:changeme', 'http://localhost:9200']
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:6.1.1
+    container_name: kibana
+    ports:
+      - '127.0.0.1:5601:5601'
+    networks:
+       - beats
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', '-u', 'docker:changeme', 'http://localhost:5601']
+
+  import_dashboards:
+      image: docker.elastic.co/beats/metricbeat:6.1.1
+      container_name: import_dashboards
+      networks:
+         - beats
+      # Using -beat "" causes it to install all dashboards in the zip and not just the metricbeat ones.
+      command: >-
+        /usr/share/metricbeat/metricbeat setup --dashboards
+        -E setup.kibana.host=kibana:5601
+        -E setup.kibana.username=docker
+        -E setup.kibana.password=changeme
+
+      depends_on:
+        elasticsearch:
+          condition: service_healthy
+        kibana:
+          condition: service_healthy
+
+  set_default_index_pattern:
+      image: docker.elastic.co/beats/metricbeat:6.1.1
+      container_name: set_default_index_pattern
+      networks:
+         - beats
+      command: >-
+        curl -XPUT http://elastic:changeme@elasticsearch:9200/.kibana/config/6.1.1
+          -d '{"defaultIndex" : "metricbeat-*"}'
+      depends_on:
+        elasticsearch:
+          condition: service_healthy
+
+networks:
+  beats:
